@@ -12,6 +12,7 @@ import {
   UserType,
   fetchPublicConfig,
 } from "./api";
+import { estimateSessionCharge } from "./pricing";
 import { AdminDashboard } from "./components/AdminDashboard";
 import { CustomerSupport } from "./components/CustomerSupport";
 import { MemberDashboard } from "./components/MemberDashboard";
@@ -77,9 +78,15 @@ export default function App() {
   const elapsedMin = useElapsed(startedAt);
   const estCharge = useMemo(() => {
     if (!userType || !startedAt || !publicConfig) return 0;
-    const rate =
-      userType === "permanent" ? publicConfig.permanent_rate_per_hour : publicConfig.temporary_rate_per_hour;
-    return Math.round((elapsedMin / 60) * rate * 100) / 100;
+    return estimateSessionCharge(
+      startedAt,
+      Date.now(),
+      userType === "permanent",
+      publicConfig.permanent_rate_per_hour,
+      publicConfig.temporary_rate_per_hour,
+      publicConfig.peak_multiplier ?? 1,
+      publicConfig.peak_windows ?? [],
+    );
   }, [elapsedMin, startedAt, userType, publicConfig]);
 
   const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null;
@@ -382,7 +389,7 @@ export default function App() {
             </span>
             <span>
               Smart Parking
-              <span className="block text-xs font-normal text-slate-500 dark:text-slate-400">Intelligent bays</span>
+              <span className="block text-xs font-normal text-slate-500 dark:text-slate-400">Easier parking for everyone</span>
             </span>
           </button>
           <div className="flex flex-wrap items-center gap-2">
@@ -464,13 +471,14 @@ export default function App() {
             className="space-y-8"
           >
             <ParkingHeroAnimation />
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-400">Intelligent parking</p>
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-400">Smart parking</p>
             <h1 className="max-w-xl text-4xl font-bold leading-tight tracking-tight text-white md:text-5xl">
-              Smart parking demo
+              Find a bay without the stress
             </h1>
             <p className="max-w-xl text-lg text-slate-400">
-              Choose how you use the car park. Members get ML-suggested bays from CCTV; visitors pay with UPI when they
-              leave. This UI runs in your browser — fast, animated, and interactive.
+              A simple smart parking experience: see an available bay, park, and pay fairly. Members sign in for account
+              billing; visitors pay when they leave. Pricing follows off-peak and peak hours so busy times cost a bit
+              more.
             </p>
             <div className="grid gap-6 md:grid-cols-3">
               <motion.button
@@ -485,7 +493,8 @@ export default function App() {
                 </span>
                 <h2 className="mb-2 text-xl font-semibold text-white">Permanent member</h2>
                 <p className="text-slate-400">
-                  Suggested bay, park, then bill on your account when you exit. Sign in required.
+                  We suggest a free bay, you park, and your visit is charged to your account when you leave. Sign in
+                  required.
                 </p>
                 <span className="mt-6 inline-flex items-center gap-2 font-semibold text-emerald-400 group-hover:gap-3">
                   Start member session →
@@ -503,7 +512,7 @@ export default function App() {
                 </span>
                 <h2 className="mb-2 text-xl font-semibold text-white">Temporary visitor</h2>
                 <p className="text-slate-400">
-                  Same bay suggestion. Pay with a UPI QR after you leave — the QR stays on screen until you confirm.
+                  Same quick bay suggestion. When you exit, pay with the QR code on screen and tap done when finished.
                 </p>
                 <span className="mt-6 inline-flex items-center gap-2 font-semibold text-orange-400 group-hover:gap-3">
                   Start visitor session →
@@ -520,7 +529,9 @@ export default function App() {
                   Admin
                 </span>
                 <h2 className="mb-2 text-xl font-semibold text-white">Administrator</h2>
-                <p className="text-slate-400">Facility operations console — sign in only.</p>
+                <p className="text-slate-400">
+                  Manage pricing, peak hours, and view live facility stats — sign in only.
+                </p>
                 <span className="mt-6 inline-flex items-center gap-2 font-semibold text-violet-400 group-hover:gap-3">
                   Admin sign-in →
                 </span>
@@ -661,11 +672,29 @@ export default function App() {
                 <h2 className="text-2xl font-bold text-white">Bay suggestion</h2>
                 <p className="mt-1 text-slate-400">
                   {publicConfig
-                    ? userType === "permanent"
-                      ? `${publicConfig.member_rate_label} · ₹${publicConfig.permanent_rate_per_hour}/hr`
-                      : `${publicConfig.visitor_rate_label} · ₹${publicConfig.temporary_rate_per_hour}/hr`
-                    : "Loading rates…"}{" "}
-                  · Yellow = your suggested bay
+                    ? (() => {
+                        const isMem = userType === "permanent";
+                        const base = isMem ? publicConfig.permanent_rate_per_hour : publicConfig.temporary_rate_per_hour;
+                        const eff = isMem
+                          ? (publicConfig.permanent_effective_rate_per_hour ?? publicConfig.permanent_rate_per_hour)
+                          : (publicConfig.temporary_effective_rate_per_hour ?? publicConfig.temporary_rate_per_hour);
+                        const label = isMem ? publicConfig.member_rate_label : publicConfig.visitor_rate_label;
+                        const peak = publicConfig.pricing_in_peak_now ?? false;
+                        const mult = publicConfig.peak_multiplier ?? 1;
+                        return (
+                          <>
+                            {label} · from ₹{base}/hr
+                            {mult > 1 && (
+                              <>
+                                {" "}
+                                (now ₹{eff}/hr{peak ? " · peak hours" : ""})
+                              </>
+                            )}{" "}
+                            · Yellow = your suggested bay
+                          </>
+                        );
+                      })()
+                    : "Loading rates…"}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -673,7 +702,7 @@ export default function App() {
                   value={videoPath}
                   onChange={(e) => setVideoPath(e.target.value)}
                   className="min-w-[200px] flex-1 rounded-xl border border-white/10 bg-slate-900/60 px-4 py-2 text-sm text-white"
-                  placeholder="CCTV path (e.g. easy.mp4)"
+                  placeholder="Video file for bay preview (e.g. easy.mp4)"
                 />
                 <button
                   type="button"
@@ -918,7 +947,7 @@ export default function App() {
         )}
 
         {phase === "admin_dashboard" && user && isFacilityAdmin && (
-          <AdminDashboard onBack={() => setPhase("landing")} />
+          <AdminDashboard onBack={() => setPhase("landing")} onSettingsSaved={reloadPublicConfig} />
         )}
 
         {phase === "dashboard" && user && !isFacilityAdmin && (

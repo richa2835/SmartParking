@@ -2,7 +2,7 @@ import hashlib
 import json
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -82,6 +82,8 @@ def _migrate_admin_and_settings(conn):
         ("member_rate_label", "Member"),
         ("visitor_rate_label", "Visitor"),
         ("overstay_hours", "2"),
+        ("peak_multiplier", "1.25"),
+        ("peak_windows", json.dumps([{"start": 9, "end": 11}, {"start": 17, "end": 20}])),
     ]
     for k, v in defaults:
         cur.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)", (k, v))
@@ -499,15 +501,174 @@ def get_rate_temporary() -> float:
     return 50.0
 
 
+_DEFAULT_PEAK_WINDOWS: List[Dict[str, int]] = [{"start": 9, "end": 11}, {"start": 17, "end": 20}]
+
+
+def get_peak_windows() -> List[Dict[str, int]]:
+    raw = get_setting("peak_windows")
+    if not raw:
+        return list(_DEFAULT_PEAK_WINDOWS)
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list) and data:
+            out = []
+            for w in data:
+                if not isinstance(w, dict):
+                    continue
+                out.append({"start": int(w["start"]), "end": int(w["end"])})
+            return out if out else list(_DEFAULT_PEAK_WINDOWS)
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        pass
+    return list(_DEFAULT_PEAK_WINDOWS)
+
+
+def get_peak_multiplier() -> float:
+    try:
+        v = get_setting("peak_multiplier")
+        if v is not None:
+            return max(1.0, float(v))
+    except (TypeError, ValueError):
+        pass
+    return 1.25
+
+
+def hour_in_peak(hour: int, windows: Optional[List[Dict[str, int]]] = None) -> bool:
+    """Hour 0–23 is peak if it falls in any window (inclusive bounds). Supports overnight windows (e.g. 22–6)."""
+    wlist = windows if windows is not None else get_peak_windows()
+    h = hour % 24
+    for w in wlist:
+        s = int(w.get("start", 0)) % 24
+        e = int(w.get("end", 0)) % 24
+        if s <= e:
+            if s <= h <= e:
+                return True
+        else:
+            if h >= s or h <= e:
+                return True
+    return False
+
+
+def effective_rate_at(dt: datetime, is_permanent: bool) -> float:
+    base = get_rate_permanent() if is_permanent else get_rate_temporary()
+    if hour_in_peak(dt.hour):
+        return round(base * get_peak_multiplier(), 2)
+    return base
+
+
+def compute_session_charge(start: datetime, end: datetime, is_permanent: bool) -> Tuple[float, float]:
+    """Time-weighted charge: each slice of the session uses the rate for that clock hour (base or peak)."""
+    if end <= start:
+        end = start + timedelta(minutes=1)
+    duration_minutes = max((end - start).total_seconds() / 60.0, 1.0)
+    total = 0.0
+    t = start
+    while t < end:
+        next_hour = t.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        seg_end = min(end, next_hour)
+        if seg_end <= t:
+            seg_end = t + timedelta(seconds=1)
+        mins = (seg_end - t).total_seconds() / 60.0
+        rate = effective_rate_at(t, is_permanent)
+        total += (mins / 60.0) * rate
+        t = seg_end
+    return duration_minutes, round(total, 2)
+
+
 def get_public_config() -> Dict[str, Any]:
+    now = datetime.now()
+    windows = get_peak_windows()
+    mult = get_peak_multiplier()
+    in_peak = hour_in_peak(now.hour, windows)
+    per_base = get_rate_permanent()
+    tmp_base = get_rate_temporary()
     return {
-        "permanent_rate_per_hour": get_rate_permanent(),
-        "temporary_rate_per_hour": get_rate_temporary(),
+        "permanent_rate_per_hour": per_base,
+        "temporary_rate_per_hour": tmp_base,
         "pay_later_cap": get_pay_later_cap_dynamic(),
         "member_rate_label": get_setting("member_rate_label", "Member") or "Member",
         "visitor_rate_label": get_setting("visitor_rate_label", "Visitor") or "Visitor",
         "overstay_hours": float(get_setting("overstay_hours", "2") or "2"),
+        "peak_multiplier": mult,
+        "peak_windows": windows,
+        "pricing_in_peak_now": in_peak,
+        "permanent_effective_rate_per_hour": round(per_base * mult, 2) if in_peak else per_base,
+        "temporary_effective_rate_per_hour": round(tmp_base * mult, 2) if in_peak else tmp_base,
     }
+
+
+def apply_admin_settings_patch(admin_user_id: int, patch: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist allowed keys from patch; raises ValueError on invalid input."""
+    details: Dict[str, Any] = {}
+
+    if patch.get("permanent_rate_per_hour") is not None:
+        v = float(patch["permanent_rate_per_hour"])
+        if v <= 0 or v > 1_000_000:
+            raise ValueError("Invalid member hourly rate")
+        set_setting("permanent_rate_per_hour", str(v))
+        details["permanent_rate_per_hour"] = v
+
+    if patch.get("temporary_rate_per_hour") is not None:
+        v = float(patch["temporary_rate_per_hour"])
+        if v <= 0 or v > 1_000_000:
+            raise ValueError("Invalid visitor hourly rate")
+        set_setting("temporary_rate_per_hour", str(v))
+        details["temporary_rate_per_hour"] = v
+
+    if patch.get("pay_later_cap") is not None:
+        v = float(patch["pay_later_cap"])
+        if v <= 0 or v > 10_000_000:
+            raise ValueError("Invalid pay-later cap")
+        set_setting("pay_later_cap", str(v))
+        details["pay_later_cap"] = v
+
+    if patch.get("member_rate_label") is not None:
+        s = str(patch["member_rate_label"]).strip()[:80]
+        if not s:
+            raise ValueError("Member label cannot be empty")
+        set_setting("member_rate_label", s)
+        details["member_rate_label"] = s
+
+    if patch.get("visitor_rate_label") is not None:
+        s = str(patch["visitor_rate_label"]).strip()[:80]
+        if not s:
+            raise ValueError("Visitor label cannot be empty")
+        set_setting("visitor_rate_label", s)
+        details["visitor_rate_label"] = s
+
+    if patch.get("overstay_hours") is not None:
+        v = float(patch["overstay_hours"])
+        if v <= 0 or v > 168:
+            raise ValueError("Invalid overstay threshold (hours)")
+        set_setting("overstay_hours", str(v))
+        details["overstay_hours"] = v
+
+    if patch.get("peak_multiplier") is not None:
+        v = float(patch["peak_multiplier"])
+        if v < 1.0 or v > 5.0:
+            raise ValueError("Peak multiplier must be between 1 and 5")
+        set_setting("peak_multiplier", str(v))
+        details["peak_multiplier"] = v
+
+    if patch.get("peak_windows") is not None:
+        raw = patch["peak_windows"]
+        if not isinstance(raw, list):
+            raise ValueError("peak_windows must be a list")
+        cleaned: List[Dict[str, int]] = []
+        for w in raw:
+            if not isinstance(w, dict):
+                continue
+            s = int(w["start"])
+            e = int(w["end"])
+            if s < 0 or s > 23 or e < 0 or e > 23:
+                raise ValueError("Peak window hours must be 0–23")
+            cleaned.append({"start": s, "end": e})
+        set_setting("peak_windows", json.dumps(cleaned))
+        details["peak_windows"] = cleaned
+
+    if details:
+        append_audit_log(admin_user_id, "update_settings", "global", None, details)
+
+    return get_public_config()
 
 
 def append_audit_log(
@@ -932,6 +1093,10 @@ def _format_notice(action: str, details: Optional[Dict[str, Any]]) -> str:
             parts.append(f"Member label: {details['member_rate_label']}")
         if "visitor_rate_label" in details:
             parts.append(f"Visitor label: {details['visitor_rate_label']}")
+        if "peak_multiplier" in details:
+            parts.append(f"Peak price multiplier set to ×{details['peak_multiplier']}")
+        if "peak_windows" in details:
+            parts.append("Peak hour windows were updated")
         return "; ".join(parts) if parts else "Settings were updated."
     if action == "user_block" and details:
         st = "blocked" if details.get("blocked") else "unblocked"

@@ -53,7 +53,7 @@ export function MemberDashboard({ onBack, onOpenOverview, onOpenHistory }: Props
         <div>
           <h2 className="text-2xl font-bold text-slate-900 dark:text-white md:text-3xl">Member dashboard</h2>
           <p className="mt-1 text-slate-600 dark:text-slate-400">
-            Monthly usage for your permanent account (completed sessions).
+            Your parking time and spend for each month (completed sessions only).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">

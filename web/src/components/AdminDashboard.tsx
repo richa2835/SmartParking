@@ -1,14 +1,49 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AdminDashboardBundle, api } from "../api";
+import { AdminDashboardBundle, AdminSettingsPatch, PublicConfig, api } from "../api";
 
 type DetailKey = "bays" | "occupancy" | "revenue" | "dwell";
 
+type AdminModuleId = "menu" | "pricing" | "heatmap" | "revenue" | "devices";
+
 type Props = {
   onBack: () => void;
+  onSettingsSaved?: () => void;
 };
 
 const POLL_MS = 15_000;
+
+const MODULE_CARDS: {
+  id: Exclude<AdminModuleId, "menu">;
+  title: string;
+  shortDescription: string;
+  icon: string;
+}[] = [
+  {
+    id: "pricing",
+    title: "Pricing & controls",
+    shortDescription: "Set base rates, peak-hour multiplier, pay-later cap, and labels your drivers see in the app.",
+    icon: "₹",
+  },
+  {
+    id: "heatmap",
+    title: "Occupancy heatmap",
+    shortDescription: "Live-style bay grid: free, busy, full, and EV bays — plus key metrics and active alerts.",
+    icon: "▦",
+  },
+  {
+    id: "revenue",
+    title: "Revenue by hour",
+    shortDescription: "Today’s paid revenue broken down by clock hour so you can spot busy billing periods.",
+    icon: "📊",
+  },
+  {
+    id: "devices",
+    title: "Device health",
+    shortDescription: "Sensors, cameras, payment terminals, and signage — totals and offline counts at a glance.",
+    icon: "📡",
+  },
+];
 
 function cellClass(state: string): string {
   switch (state) {
@@ -31,12 +66,29 @@ function severityDot(sev: string): string {
   return "bg-sky-500 shadow-[0_0_8px_rgba(56,189,248,0.5)]";
 }
 
-export function AdminDashboard({ onBack }: Props) {
+export function AdminDashboard({ onBack, onSettingsSaved }: Props) {
+  const [moduleView, setModuleView] = useState<AdminModuleId>("menu");
   const [data, setData] = useState<AdminDashboardBundle | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [detailKey, setDetailKey] = useState<DetailKey | null>(null);
+
+  const [settings, setSettings] = useState<PublicConfig | null>(null);
+  const [settingsErr, setSettingsErr] = useState<string | null>(null);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsSaved, setSettingsSaved] = useState(false);
+  const [permanentRate, setPermanentRate] = useState("");
+  const [temporaryRate, setTemporaryRate] = useState("");
+  const [payLaterCap, setPayLaterCap] = useState("");
+  const [memberLabel, setMemberLabel] = useState("");
+  const [visitorLabel, setVisitorLabel] = useState("");
+  const [overstayHours, setOverstayHours] = useState("");
+  const [peakMult, setPeakMult] = useState("");
+  const [peak1Start, setPeak1Start] = useState("9");
+  const [peak1End, setPeak1End] = useState("11");
+  const [peak2Start, setPeak2Start] = useState("17");
+  const [peak2End, setPeak2End] = useState("20");
 
   const load = useCallback(async () => {
     setErr(null);
@@ -50,11 +102,74 @@ export function AdminDashboard({ onBack }: Props) {
     }
   }, []);
 
+  const loadSettings = useCallback(async () => {
+    setSettingsErr(null);
+    try {
+      const s = await api<PublicConfig>("/api/admin/settings");
+      setSettings(s);
+      setPermanentRate(String(s.permanent_rate_per_hour));
+      setTemporaryRate(String(s.temporary_rate_per_hour));
+      setPayLaterCap(String(s.pay_later_cap));
+      setMemberLabel(s.member_rate_label);
+      setVisitorLabel(s.visitor_rate_label);
+      setOverstayHours(String(s.overstay_hours));
+      setPeakMult(String(s.peak_multiplier ?? 1.25));
+      const w = s.peak_windows ?? [];
+      if (w[0]) {
+        setPeak1Start(String(w[0].start));
+        setPeak1End(String(w[0].end));
+      }
+      if (w[1]) {
+        setPeak2Start(String(w[1].start));
+        setPeak2End(String(w[1].end));
+      }
+    } catch (e) {
+      setSettingsErr(e instanceof Error ? e.message : "Could not load settings");
+    }
+  }, []);
+
   useEffect(() => {
     void load();
     const t = setInterval(() => void load(), POLL_MS);
     return () => clearInterval(t);
   }, [load]);
+
+  useEffect(() => {
+    void loadSettings();
+  }, [loadSettings]);
+
+  const saveSettings = async () => {
+    setSettingsErr(null);
+    setSettingsSaved(false);
+    setSettingsSaving(true);
+    try {
+      const patch: AdminSettingsPatch = {
+        permanent_rate_per_hour: parseFloat(permanentRate),
+        temporary_rate_per_hour: parseFloat(temporaryRate),
+        pay_later_cap: parseFloat(payLaterCap),
+        member_rate_label: memberLabel.trim(),
+        visitor_rate_label: visitorLabel.trim(),
+        overstay_hours: parseFloat(overstayHours),
+        peak_multiplier: parseFloat(peakMult),
+        peak_windows: [
+          { start: parseInt(peak1Start, 10), end: parseInt(peak1End, 10) },
+          { start: parseInt(peak2Start, 10), end: parseInt(peak2End, 10) },
+        ],
+      };
+      const next = await api<PublicConfig>("/api/admin/settings", {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+      setSettings(next);
+      setSettingsSaved(true);
+      onSettingsSaved?.();
+      setTimeout(() => setSettingsSaved(false), 4000);
+    } catch (e) {
+      setSettingsErr(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
 
   useEffect(() => {
     const id = setInterval(() => setClock(new Date()), 1000);
@@ -67,6 +182,11 @@ export function AdminDashboard({ onBack }: Props) {
   }, [data]);
 
   const detail = detailKey && data?.metric_details[detailKey];
+
+  const openModule = (id: Exclude<AdminModuleId, "menu">) => {
+    setModuleView(id);
+    if (id === "pricing") void loadSettings();
+  };
 
   return (
     <motion.section
@@ -121,9 +241,246 @@ export function AdminDashboard({ onBack }: Props) {
         <div className="rounded-2xl border border-white/10 bg-slate-900/50 py-16 text-center text-slate-500">Loading…</div>
       )}
 
-      {data && (
-        <>
-          {/* Metric cards */}
+      {data && moduleView === "menu" && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h3 className="text-xl font-bold text-white md:text-2xl">Admin modules</h3>
+              <p className="mt-1 max-w-2xl text-sm text-slate-400">
+                Choose a module to open. Each area loads the full tools and charts for that part of the facility.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {MODULE_CARDS.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => openModule(m.id)}
+                className="group flex flex-col rounded-2xl border border-white/10 bg-gradient-to-br from-slate-800/80 to-slate-900/90 p-6 text-left shadow-lg transition hover:border-violet-500/40 hover:shadow-violet-500/10"
+              >
+                <div className="flex items-start gap-4">
+                  <span
+                    className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-slate-950/50 text-lg font-bold text-violet-300"
+                    aria-hidden
+                  >
+                    {m.icon}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold text-white group-hover:text-violet-200">{m.title}</p>
+                    <p className="mt-2 text-sm leading-relaxed text-slate-400">{m.shortDescription}</p>
+                    <span className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-violet-800 dark:text-violet-300">
+                      Open module
+                      <span className="transition group-hover:translate-x-0.5" aria-hidden>
+                        →
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {data && moduleView === "pricing" && settings && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="space-y-4"
+        >
+          <button
+            type="button"
+            onClick={() => setModuleView("menu")}
+            className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/10"
+          >
+            ← All modules
+          </button>
+          <div className="rounded-2xl border border-cyan-500/25 bg-slate-900/70 p-5 backdrop-blur">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-bold text-white">Pricing &amp; controls</h3>
+                <p className="mt-1 text-sm text-slate-400">
+                  Base rates are per hour. Peak windows apply a multiplier to the hourly rate for time inside those hours
+                  (sessions that span peak and off-peak are split automatically).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void loadSettings()}
+                className="shrink-0 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/10"
+              >
+                Reload
+              </button>
+            </div>
+            {settingsErr && (
+              <div className="mt-3 rounded-lg border border-red-500/40 bg-red-950/40 px-3 py-2 text-sm text-red-100">
+                {settingsErr}
+              </div>
+            )}
+            {settingsSaved && (
+              <div className="mt-3 rounded-lg border border-emerald-500/40 bg-emerald-950/40 px-3 py-2 text-sm text-emerald-100">
+                Settings saved. Members will see updates on their next page refresh.
+              </div>
+            )}
+            <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <label className="block text-sm">
+                <span className="text-slate-400">Member base (₹/hr)</span>
+                <input
+                  value={permanentRate}
+                  onChange={(e) => setPermanentRate(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 text-white"
+                  inputMode="decimal"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-slate-400">Visitor base (₹/hr)</span>
+                <input
+                  value={temporaryRate}
+                  onChange={(e) => setTemporaryRate(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 text-white"
+                  inputMode="decimal"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-slate-400">Pay-later cap (₹)</span>
+                <input
+                  value={payLaterCap}
+                  onChange={(e) => setPayLaterCap(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 text-white"
+                  inputMode="decimal"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-slate-400">Member label (shown in app)</span>
+                <input
+                  value={memberLabel}
+                  onChange={(e) => setMemberLabel(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 text-white"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-slate-400">Visitor label</span>
+                <input
+                  value={visitorLabel}
+                  onChange={(e) => setVisitorLabel(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 text-white"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-slate-400">Overstay alert (hours)</span>
+                <input
+                  value={overstayHours}
+                  onChange={(e) => setOverstayHours(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 text-white"
+                  inputMode="decimal"
+                />
+              </label>
+              <label className="block text-sm sm:col-span-2 lg:col-span-1">
+                <span className="text-slate-400">Peak price multiplier (×)</span>
+                <input
+                  value={peakMult}
+                  onChange={(e) => setPeakMult(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 text-white"
+                  inputMode="decimal"
+                />
+              </label>
+            </div>
+            <div className="mt-4 rounded-xl border border-white/10 bg-slate-950/40 p-4">
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Peak hour windows (24h clock)</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Hours are inclusive (e.g. 9–11 includes 9:00–11:59). Set both ends the same to disable a band.
+              </p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="text-xs text-slate-400">
+                    Band 1 start
+                    <input
+                      value={peak1Start}
+                      onChange={(e) => setPeak1Start(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900 px-2 py-1.5 text-white"
+                      type="number"
+                      min={0}
+                      max={23}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-400">
+                    Band 1 end
+                    <input
+                      value={peak1End}
+                      onChange={(e) => setPeak1End(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900 px-2 py-1.5 text-white"
+                      type="number"
+                      min={0}
+                      max={23}
+                    />
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="text-xs text-slate-400">
+                    Band 2 start
+                    <input
+                      value={peak2Start}
+                      onChange={(e) => setPeak2Start(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900 px-2 py-1.5 text-white"
+                      type="number"
+                      min={0}
+                      max={23}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-400">
+                    Band 2 end
+                    <input
+                      value={peak2End}
+                      onChange={(e) => setPeak2End(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-white/10 bg-slate-900 px-2 py-1.5 text-white"
+                      type="number"
+                      min={0}
+                      max={23}
+                    />
+                  </label>
+                </div>
+              </div>
+              <p className="mt-3 text-xs text-slate-500">
+                Current clock: {clock.toLocaleTimeString(undefined, { hour12: false })} ·{" "}
+                {settings.pricing_in_peak_now ?? false ? (
+                  <span className="text-amber-300">Peak pricing applies now</span>
+                ) : (
+                  <span className="text-emerald-300">Off-peak pricing now</span>
+                )}
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={settingsSaving}
+              onClick={() => void saveSettings()}
+              className="mt-5 rounded-xl bg-gradient-to-r from-cyan-500 to-emerald-600 px-6 py-2.5 text-sm font-semibold text-white shadow-lg hover:brightness-110 disabled:opacity-50"
+            >
+              {settingsSaving ? "Saving…" : "Save pricing & controls"}
+            </button>
+          </div>
+        </motion.div>
+      )}
+
+      {data && moduleView === "pricing" && !settings && (
+        <div className="rounded-2xl border border-white/10 bg-slate-900/50 px-4 py-8 text-center text-slate-400">
+          Loading pricing settings…
+        </div>
+      )}
+
+      {data && moduleView === "heatmap" && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="space-y-4"
+        >
+          <button
+            type="button"
+            onClick={() => setModuleView("menu")}
+            className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/10"
+          >
+            ← All modules
+          </button>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <button
               type="button"
@@ -164,7 +521,6 @@ export function AdminDashboard({ onBack }: Props) {
           </div>
 
           <div className="grid gap-6 lg:grid-cols-3">
-            {/* Heatmap */}
             <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-5 lg:col-span-2">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                 <h3 className="font-semibold text-white">Occupancy heatmap</h3>
@@ -199,10 +555,9 @@ export function AdminDashboard({ onBack }: Props) {
               </div>
             </div>
 
-            {/* Alerts */}
             <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-5">
               <h3 className="mb-4 font-semibold text-white">Active alerts</h3>
-              <ul className="max-h-[280px] space-y-3 overflow-y-auto pr-1">
+              <ul className="max-h-[min(420px,60vh)] space-y-3 overflow-y-auto pr-1">
                 {data.alerts.length === 0 && <li className="text-sm text-slate-500">No active alerts.</li>}
                 {data.alerts.map((a, i) => (
                   <li
@@ -224,8 +579,22 @@ export function AdminDashboard({ onBack }: Props) {
               </ul>
             </div>
           </div>
+        </motion.div>
+      )}
 
-          {/* Revenue by hour */}
+      {data && moduleView === "revenue" && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="space-y-4"
+        >
+          <button
+            type="button"
+            onClick={() => setModuleView("menu")}
+            className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/10"
+          >
+            ← All modules
+          </button>
           <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-5">
             <h3 className="mb-4 font-semibold text-white">Revenue by hour (today)</h3>
             <div className="space-y-2">
@@ -251,8 +620,22 @@ export function AdminDashboard({ onBack }: Props) {
               })}
             </div>
           </div>
+        </motion.div>
+      )}
 
-          {/* Device health */}
+      {data && moduleView === "devices" && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="space-y-4"
+        >
+          <button
+            type="button"
+            onClick={() => setModuleView("menu")}
+            className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/10"
+          >
+            ← All modules
+          </button>
           <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-5">
             <h3 className="mb-4 font-semibold text-white">Device health</h3>
             <div className="overflow-x-auto">
@@ -289,7 +672,7 @@ export function AdminDashboard({ onBack }: Props) {
               </table>
             </div>
           </div>
-        </>
+        </motion.div>
       )}
 
       <AnimatePresence>

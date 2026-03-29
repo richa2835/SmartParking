@@ -85,10 +85,10 @@ def get_lot_occupancy_insights(video_path: str):
     peak = ratio >= 0.6 or occupied >= max(3, int(0.6 * total))
     if peak:
         label = "peak"
-        hint = "High traffic — most bays are occupied. Expect congestion at entry and exits."
+        hint = "The car park is busy right now — expect more traffic near the entrance and exits."
     else:
         label = "free"
-        hint = "Lighter traffic — more bays free. Good time to park quickly."
+        hint = "Plenty of space is available — this is a good time to find a bay quickly."
     return {
         "total_slots": total,
         "occupied_count": occupied,

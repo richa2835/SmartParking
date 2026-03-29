@@ -107,7 +107,7 @@ export function OverviewInsights({ videoPath, onOpenHistory, onBack }: Props) {
         <div>
           <h2 className="text-2xl font-bold text-slate-900 dark:text-white md:text-3xl">Traffic overview</h2>
           <p className="mt-1 text-slate-600 dark:text-slate-400">
-            Live-style snapshot from your CCTV frame: occupancy drives peak vs free-hour insights.
+            See how full the car park looks from the latest frame, and whether it is a busy or quieter time.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -222,7 +222,7 @@ export function OverviewInsights({ videoPath, onOpenHistory, onBack }: Props) {
                     Current traffic
                   </p>
                   <p className="mt-2 text-2xl font-bold text-slate-900 dark:text-white">
-                    {data.peak_traffic ? "Peak hour · high traffic" : "Free hour · lighter traffic"}
+                    {data.peak_traffic ? "Busy period · more vehicles" : "Quieter period · easier parking"}
                   </p>
                   <p className="mt-3 text-sm leading-relaxed text-slate-700 dark:text-slate-300">{data.insight}</p>
                   <p className="mt-4 text-sm font-medium text-slate-600 dark:text-slate-400">{data.summary}</p>
@@ -261,7 +261,8 @@ export function OverviewInsights({ videoPath, onOpenHistory, onBack }: Props) {
                 </li>
               </ul>
               <p className="mt-4 text-xs text-slate-500 dark:text-slate-500">
-                Rule of thumb: ≥60% bays full → peak; otherwise treated as a free hour for this demo.
+                We treat it as busy when most bays look full (about 60% or more), or when several bays are taken in a
+                row.
               </p>
             </motion.div>
           </div>

@@ -25,8 +25,10 @@ os.chdir(ROOT)
 
 from db import (  # noqa: E402
     FACILITY_ADMIN_USERNAMES,
+    apply_admin_settings_patch,
     authenticate_user,
     close_session,
+    compute_session_charge,
     create_session,
     create_user,
     facility_display_name,
@@ -37,8 +39,6 @@ from db import (  # noqa: E402
     get_notices_for_user,
     get_pay_later_cap_dynamic,
     get_public_config,
-    get_rate_permanent,
-    get_rate_temporary,
     get_session,
     get_user_by_id,
     get_user_financials,
@@ -122,14 +122,6 @@ def startup():
     init_db()
 
 
-def calc_bill(start: datetime, end: datetime, is_permanent: bool) -> tuple[float, float]:
-    duration_minutes = max((end - start).total_seconds() / 60.0, 1.0)
-    hours = duration_minutes / 60.0
-    rate = get_rate_permanent() if is_permanent else get_rate_temporary()
-    amount = round(hours * rate, 2)
-    return duration_minutes, amount
-
-
 def qr_data_url(amount: float) -> str:
     payload = f"SMARTPARK|PAY|UPI|INR|{amount:.2f}"
     img = qrcode.make(payload)
@@ -165,6 +157,17 @@ class RechargeBody(BaseModel):
 
 class MemberPayBody(BaseModel):
     method: Literal["pay_now", "wallet", "pay_later"]
+
+
+class AdminSettingsPatchBody(BaseModel):
+    permanent_rate_per_hour: Optional[float] = None
+    temporary_rate_per_hour: Optional[float] = None
+    pay_later_cap: Optional[float] = None
+    member_rate_label: Optional[str] = None
+    visitor_rate_label: Optional[str] = None
+    overstay_hours: Optional[float] = None
+    peak_multiplier: Optional[float] = None
+    peak_windows: Optional[list] = None
 
 
 def _parse_started_at(s: str) -> datetime:
@@ -283,7 +286,7 @@ def end_session_api(body: EndSessionBody):
     start = _parse_started_at(str(row["started_at"]))
     end = datetime.now()
     is_perm = row["user_type"] == "permanent"
-    duration_minutes, amount = calc_bill(start, end, is_perm)
+    duration_minutes, amount = compute_session_charge(start, end, is_perm)
 
     if is_perm:
         payment_status = "pending_member_payment"
@@ -417,6 +420,22 @@ def admin_dashboard(admin_id: int = Depends(require_admin)):
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
     return get_admin_dashboard_bundle(str(u["username"]))
+
+
+@app.get("/api/admin/settings")
+def admin_get_settings(_admin_id: int = Depends(require_admin)):
+    return get_public_config()
+
+
+@app.patch("/api/admin/settings")
+def admin_patch_settings(body: AdminSettingsPatchBody, admin_id: int = Depends(require_admin)):
+    patch = body.model_dump(exclude_unset=True) if hasattr(body, "model_dump") else body.dict(exclude_unset=True)
+    if not patch:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        return apply_admin_settings_patch(admin_id, patch)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 _dist = ROOT / "web" / "dist"

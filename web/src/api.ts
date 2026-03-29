@@ -25,6 +25,8 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export type PeakWindow = { start: number; end: number };
+
 export interface PublicConfig {
   permanent_rate_per_hour: number;
   temporary_rate_per_hour: number;
@@ -32,7 +34,27 @@ export interface PublicConfig {
   member_rate_label: string;
   visitor_rate_label: string;
   overstay_hours: number;
+  /** Peak-based dynamic pricing (optional for older API responses). */
+  peak_multiplier?: number;
+  peak_windows?: PeakWindow[];
+  pricing_in_peak_now?: boolean;
+  permanent_effective_rate_per_hour?: number;
+  temporary_effective_rate_per_hour?: number;
 }
+
+export type AdminSettingsPatch = Partial<
+  Pick<
+    PublicConfig,
+    | "permanent_rate_per_hour"
+    | "temporary_rate_per_hour"
+    | "pay_later_cap"
+    | "member_rate_label"
+    | "visitor_rate_label"
+    | "overstay_hours"
+    | "peak_multiplier"
+    | "peak_windows"
+  >
+>;
 
 export async function fetchPublicConfig(): Promise<PublicConfig> {
   return api<PublicConfig>("/api/config/public");

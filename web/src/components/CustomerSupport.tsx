@@ -62,7 +62,7 @@ const ISSUE_CATEGORIES: IssueCategory[] = [
         id: "bay",
         label: "Wrong bay / occupancy looks off",
         reply:
-          "The demo uses a single video frame for occupancy. Refresh the bay preview and confirm the yellow highlight before parking. If the lot looks full, wait or try later — Insights shows peak vs free traffic.",
+          "The bay map updates from a live frame. Refresh the preview and confirm the yellow highlight before you park. If the lot looks full, wait or try again later — Traffic overview shows whether it is a busy or quieter time.",
       },
       {
         id: "session",
