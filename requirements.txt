@@ -1,0 +1,12 @@
+streamlit
+streamlit-autorefresh
+fastapi
+uvicorn[standard]
+python-jose[cryptography]
+python-multipart
+opencv-python
+numpy
+pandas
+qrcode
+Pillow
+ultralytics

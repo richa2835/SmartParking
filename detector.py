@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from ultralytics import YOLO
-
+print("detection started")
 # Load class list
 my_file = open("coco.txt", "r")
 data = my_file.read()
@@ -17,7 +17,13 @@ colors = {
 }
 
 # Open video capture
-cap = cv2.VideoCapture("C:/GEN AI/Parking/easy.mp4")
+cap = cv2.VideoCapture("easy1.mp4")
+if not cap.isOpened():
+    print("ERROR: Cannot open video file")
+    exit()
+else:
+    print("Video opened successfully")
+
 
 # Constants (Adjust these based on your video)
 PARKING_SPACE_WIDTH = 120
@@ -175,7 +181,7 @@ while True:
     cv2.imshow('FRAME', processed_frame)
 
     # Wait for key press
-    key = cv2.waitKey(1) & 0xFF
+    key = cv2.waitKey(100) & 0xFF
     if key == ord('q'):
         break
 

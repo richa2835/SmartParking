@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.env.*
+*.local
+
+# Local databases (regenerate on deploy)
+*.db
+
+# Node / Vite (web/)
+web/node_modules/
+web/dist/
+web/.vite/
+*.tsbuildinfo
+
+# Large / optional assets (remove lines if you want these in Git)
+*.pt
+*.mp4
+*.onnx
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
